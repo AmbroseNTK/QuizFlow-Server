@@ -68,10 +68,17 @@ io.on("connection", function (socket) {
             }
         } else if (event == events.sendStartStreaming) {
             const lobbyId = data.lobbyId;
-            socket.broadcast.emit("global", {
-                event: events.startStreaming,
-                lobbyId: lobbyId
-            });
+            const uid = data.uid;
+            let lobby = admin.firestore().collection("lobby").doc(lobbyId);
+            let lobbyData = await lobby.get();
+            if (lobbyData.exists) {
+                if (lobbyData.data().ownerId == uid) {
+                    let usrs = await lobby.collection("participants").listDocuments();
+                    for (let usr of usrs) {
+                        usr.delete();
+                    }
+                }
+            }
         } else if (event == events.joinLobby) {
             const lobbyId = data.lobbyId;
             const uid = data.uid;
@@ -116,10 +123,48 @@ io.on("connection", function (socket) {
                     }
                 });
             }
+        } else if (event == events.sendLeaderboard) {
+            const lobbyId = data.lobbyId;
+            let leaderboard = [];
+            let lobby = admin.firestore().collection("lobby").doc(lobbyId)
+            let participants = lobby.collection("participants");
+            let participantsData = await participants.get();
+            let questions = lobby.collection("questions");
+            let questionsData = await questions.get();
+            for (let quest of questionsData.docs) {
+                let qid = quest.id;
+                let answers = questions.doc(qid).collection("answers");
+                let answersData = await answers.get();
+                for (let answer of answersData.docs) {
+                    updateLeaderboard(leaderboard, answer.id, quest.data(), answer.data());
+                }
+            }
+            console.log(leaderboard);
+            leaderboard = leaderboard.sort((u1, u2) => u1.correct < u2.correct);
+            for (let user of participantsData.docs) {
+                let uid = user.id;
+                socket.broadcast.emit(uid, {
+                    event: events.leaderboard,
+                    leaderboard: leaderboard
+                });
+            }
         }
     })
 });
 
+
+function updateLeaderboard(leaderboard, uid, question, answer) {
+    if (leaderboard.filter(rec => rec.uid == uid).length == 0) {
+        leaderboard.push({
+            uid: uid,
+            nickname: answer.nickname,
+            correct: 0
+        });
+    }
+    if (question.correctAnswer == answer.answer) {
+        leaderboard.filter(rec => rec.uid == uid)[0].correct++;
+    }
+}
 
 
 app.use(bodyParser());
@@ -145,6 +190,37 @@ app.post("/lobby", async (req, res) => {
     } catch (err) {
         res.send({
             error: err
+        });
+    }
+});
+
+app.post("/lobby/clearResult", async (req, res) => {
+    const {
+        uid,
+        lobbyId,
+        questionId
+    } = req.body;
+    try {
+        console.log(req.body);
+        let lobby = admin.firestore().collection("lobby").doc(lobbyId);
+        let lobbyData = await lobby.get();
+        if (lobbyData.exists) {
+            if (lobbyData.data().ownerId == uid) {
+                let results = await lobby.collection("questions").doc(questionId)
+                    .collection("answers").listDocuments();
+                console.log(results);
+                for (let result of results) {
+                    console.log(result);
+                    result.delete();
+                }
+            }
+        }
+        res.status(200).send({
+            message: "OK"
+        });
+    } catch (err) {
+        res.status(401).send({
+            message: "Failed"
         });
     }
 });
